@@ -21,6 +21,7 @@ import {
   sanitizedProcessEnv,
 } from "@opencode-ai/core/util/opencode-process"
 import { validateSession } from "./validate-session"
+import { Flag } from "@opencode-ai/core/flag/flag"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -111,6 +112,14 @@ export const TuiThreadCommand = cmd({
       .option("agent", {
         type: "string",
         describe: "agent to use",
+      })
+      .option("debug-scenario", {
+        type: "string",
+        describe: "load an internal TUI debug scenario fixture",
+      })
+      .option("debug-frame", {
+        type: "string",
+        describe: "select a named frame from an internal TUI debug scenario",
       }),
   handler: async (args) => {
     // Keep ENABLE_PROCESSED_INPUT cleared even if other code flips it.
@@ -127,10 +136,40 @@ export const TuiThreadCommand = cmd({
         return
       }
 
+      const network = resolveNetworkOptionsNoConfig(args)
+      const external =
+        process.argv.includes("--port") ||
+        process.argv.includes("--hostname") ||
+        process.argv.includes("--mdns") ||
+        network.mdns ||
+        network.port !== 0 ||
+        network.hostname !== "127.0.0.1"
+      const debug = Boolean(args.debugScenario || args.debugFrame)
+
+      if (debug && (!args.debugScenario || !args.debugFrame)) {
+        UI.error("--debug-scenario and --debug-frame must be used together")
+        process.exitCode = 1
+        return
+      }
+
+      if (debug && !Flag.OPENCODE_PURE) {
+        UI.error("debug scenarios require --pure")
+        process.exitCode = 1
+        return
+      }
+
+      if (
+        debug &&
+        (external || args.continue || args.session || args.fork || args.prompt || args.model || args.agent)
+      ) {
+        UI.error("debug scenarios cannot be combined with network, session, fork, prompt, model, or agent options")
+        process.exitCode = 1
+        return
+      }
+
       // Resolve relative --project paths from PWD, then use the real cwd after
       // chdir so the thread and worker share the same directory key.
       const next = resolveThreadDirectory(args.project)
-      const file = await target()
       try {
         process.chdir(next)
       } catch {
@@ -138,6 +177,73 @@ export const TuiThreadCommand = cmd({
         return
       }
       const cwd = Filesystem.resolve(process.cwd())
+
+      const launch = async (input: {
+        url: string
+        sessionID?: string
+        fetch?: typeof fetch
+        events?: EventSource
+        prompt?: string
+        onSnapshot?: () => Promise<string[]>
+        stop?: () => Promise<void>
+      }) => {
+        try {
+          try {
+            await validateSession({
+              url: input.url,
+              sessionID: input.sessionID,
+              directory: cwd,
+              fetch: input.fetch,
+            })
+          } catch (error) {
+            UI.error(errorMessage(error))
+            process.exitCode = 1
+            return
+          }
+
+          const config = await TuiConfig.get()
+          const { createTuiRenderer, tui } = await import("./app")
+          const renderer = await createTuiRenderer(config)
+          await tui({
+            url: input.url,
+            renderer,
+            onSnapshot: input.onSnapshot,
+            config,
+            directory: cwd,
+            fetch: input.fetch,
+            events: input.events,
+            args: {
+              continue: args.continue,
+              sessionID: input.sessionID,
+              agent: args.agent,
+              model: args.model,
+              prompt: input.prompt,
+              fork: args.fork,
+            },
+          }).done
+        } finally {
+          await input.stop?.()
+        }
+      }
+
+      if (args.debugScenario && args.debugFrame) {
+        const { createDebugFrameTransport } = await import("./debug/frame")
+        const transport = await createDebugFrameTransport({
+          file: Filesystem.resolveFilePath(cwd, args.debugScenario),
+          frame: args.debugFrame,
+          directory: cwd,
+        })
+        await launch({
+          url: "http://opencode.debug",
+          sessionID: transport.sessionID,
+          fetch: transport.fetch,
+          events: transport.events,
+        })
+        process.exit(0)
+        return
+      }
+
+      const file = await target()
       const env = sanitizedProcessEnv({
         [OPENCODE_PROCESS_ROLE]: "worker",
         [OPENCODE_RUN_ID]: ensureRunID(),
@@ -187,16 +293,6 @@ export const TuiThreadCommand = cmd({
       }
 
       const prompt = await input(args.prompt)
-      const config = await TuiConfig.get()
-
-      const network = resolveNetworkOptionsNoConfig(args)
-      const external =
-        process.argv.includes("--port") ||
-        process.argv.includes("--hostname") ||
-        process.argv.includes("--mdns") ||
-        network.mdns ||
-        network.port !== 0 ||
-        network.hostname !== "127.0.0.1"
 
       const transport = external
         ? {
@@ -210,51 +306,21 @@ export const TuiThreadCommand = cmd({
             events: createEventSource(client),
           }
 
-      try {
-        await validateSession({
-          url: transport.url,
-          sessionID: args.session,
-          directory: cwd,
-          fetch: transport.fetch,
-        })
-      } catch (error) {
-        UI.error(errorMessage(error))
-        process.exitCode = 1
-        return
-      }
-
       setTimeout(() => {
         client.call("checkUpgrade", { directory: cwd }).catch(() => {})
       }, 1000).unref?.()
 
-      try {
-        const { createTuiRenderer, tui } = await import("./app")
-        const renderer = await createTuiRenderer(config)
-        const handle = tui({
-          url: transport.url,
-          renderer,
-          async onSnapshot() {
-            const tui = writeHeapSnapshot("tui.heapsnapshot")
-            const server = await client.call("snapshot", undefined)
-            return [tui, server]
-          },
-          config,
-          directory: cwd,
-          fetch: transport.fetch,
-          events: transport.events,
-          args: {
-            continue: args.continue,
-            sessionID: args.session,
-            agent: args.agent,
-            model: args.model,
-            prompt,
-            fork: args.fork,
-          },
-        })
-        await handle.done
-      } finally {
-        await stop()
-      }
+      await launch({
+        ...transport,
+        sessionID: args.session,
+        prompt,
+        stop,
+        onSnapshot: async () => {
+          const tui = writeHeapSnapshot("tui.heapsnapshot")
+          const server = await client.call("snapshot", undefined)
+          return [tui, server]
+        },
+      })
     } finally {
       unguard?.()
     }

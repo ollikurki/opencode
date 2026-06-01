@@ -1,0 +1,80 @@
+{
+  "name": "subagent-lifecycle",
+  "frames": {
+    "running": {
+      "prompt": "Preview a foreground subagent while it is reading.",
+      "parts": [
+        { "type": "text", "text": "Running delegated work:" },
+        {
+          "type": "subagent",
+          "agent": "explore",
+          "description": "Inspect renderer",
+          "state": "running",
+          "childTools": [
+            {
+              "tool": "read",
+              "title": "src/cli/cmd/tui/routes/session/index.tsx",
+              "input": { "filePath": "src/cli/cmd/tui/routes/session/index.tsx" }
+            }
+          ]
+        }
+      ]
+    },
+    "active-background": {
+      "prompt": "Preview a launched background subagent whose child is still reading.",
+      "parts": [
+        { "type": "text", "text": "Active background work:" },
+        {
+          "type": "subagent",
+          "agent": "explore",
+          "description": "Inspect renderer",
+          "state": "active-background",
+          "childTools": [
+            {
+              "tool": "read",
+              "title": "src/cli/cmd/tui/routes/session/index.tsx",
+              "input": { "filePath": "src/cli/cmd/tui/routes/session/index.tsx" }
+            }
+          ]
+        }
+      ]
+    },
+    "completed": {
+      "prompt": "Preview completed foreground and background subagents.",
+      "parts": [
+        { "type": "text", "text": "Completed delegated work:" },
+        {
+          "type": "subagent",
+          "agent": "general",
+          "description": "Answer directly",
+          "state": "completed",
+          "durationMs": 501
+        },
+        {
+          "type": "subagent",
+          "agent": "general",
+          "description": "Answer directly",
+          "background": true,
+          "state": "completed",
+          "durationMs": 501
+        },
+        {
+          "type": "subagent",
+          "agent": "explore",
+          "description": "Inspect renderer",
+          "background": true,
+          "state": "completed",
+          "durationMs": 501,
+          "childTools": [
+            {
+              "tool": "read",
+              "title": "src/cli/cmd/tui/routes/session/index.tsx",
+              "state": "completed",
+              "input": { "filePath": "src/cli/cmd/tui/routes/session/index.tsx" }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
