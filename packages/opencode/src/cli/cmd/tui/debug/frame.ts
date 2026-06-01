@@ -3,6 +3,7 @@ import type {
   Message,
   Part,
   Session,
+  SessionStatus,
   TextPart,
   ToolPart,
   ToolState,
@@ -39,6 +40,19 @@ const PartInput = Schema.Union([
   Schema.Struct({ ...SubagentFields, state: Schema.Literal("running") }),
   Schema.Struct({ ...SubagentFields, state: Schema.Literal("active-background") }),
   Schema.Struct({ ...SubagentFields, state: Schema.Literal("completed"), background: Schema.optional(Schema.Boolean) }),
+  Schema.Struct({
+    ...SubagentFields,
+    state: Schema.Literal("retrying"),
+    background: Schema.optional(Schema.Boolean),
+    message: Schema.String,
+    attempt: Schema.Number,
+  }),
+  Schema.Struct({
+    ...SubagentFields,
+    state: Schema.Literal("error"),
+    background: Schema.optional(Schema.Boolean),
+    error: Schema.String,
+  }),
 ])
 const Frame = Schema.Struct({
   prompt: Schema.String,
@@ -66,7 +80,7 @@ export async function createDebugFrameTransport(input: { file: string; frame: st
   const created = 1_000_000
   const root = makeSession(sessionID, input.directory, `${fixture.name}: ${input.frame}`, created)
   const childSessions = new Map<string, { session: Session; transcript: Transcript }>()
-  const statuses: Record<string, { type: "busy" }> = {}
+  const statuses: Record<string, SessionStatus> = {}
   const parts = compileParts(frame, sessionID, created, input.directory, childSessions, statuses)
   const transcript = turn(sessionID, created, frame.prompt, parts)
   const fetch = createFetch({ root, transcript, childSessions, statuses, directory: input.directory })
@@ -81,7 +95,7 @@ function compileParts(
   created: number,
   directory: string,
   children: Map<string, { session: Session; transcript: Transcript }>,
-  statuses: Record<string, { type: "busy" }>,
+  statuses: Record<string, SessionStatus>,
 ) {
   return frame.parts.map((part, index): Part => {
     const id = `part_${index.toString().padStart(2, "0")}`
@@ -125,24 +139,29 @@ function compileParts(
       ),
     })
     if (part.state === "active-background") statuses[childID] = { type: "busy" }
+    if (part.state === "retrying") {
+      statuses[childID] = { type: "retry", attempt: part.attempt, message: part.message, next: created + 1000 }
+    }
+    const state = part.state === "completed" ? "completed" : part.state === "error" ? "error" : "running"
+    const background =
+      part.state === "active-background" ||
+      ((part.state === "completed" || part.state === "retrying" || part.state === "error") && part.background === true)
     return tool(
       sessionID,
       assistantID(sessionID),
       id,
       "task",
       toolState(
-        part.state === "running" ? "running" : "completed",
+        state,
         {
           description: part.description,
           subagent_type: part.agent,
         },
         {
           sessionId: childID,
-          ...(part.state === "active-background" || (part.state === "completed" && part.background === true)
-            ? { background: true }
-            : {}),
+          ...(background ? { background: true } : {}),
         },
-        part.description,
+        part.state === "error" ? part.error : part.description,
         created,
       ),
     )
@@ -153,7 +172,7 @@ function createFetch(input: {
   root: Session
   transcript: Transcript
   childSessions: Map<string, { session: Session; transcript: Transcript }>
-  statuses: Record<string, { type: "busy" }>
+  statuses: Record<string, SessionStatus>
   directory: string
 }) {
   const provider = {
@@ -324,7 +343,9 @@ function toolState(
   created: number,
 ): ToolState {
   if (state === "running") return { status: "running", input, metadata, title, time: { start: created } }
-  if (state === "error") return { status: "error", input, error: title, time: { start: created, end: created + 1 } }
+  if (state === "error") {
+    return { status: "error", input, metadata, error: title, time: { start: created, end: created + 1 } }
+  }
   return {
     status: "completed",
     input,

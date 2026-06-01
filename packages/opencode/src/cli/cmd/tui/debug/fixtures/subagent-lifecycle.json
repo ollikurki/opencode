@@ -39,6 +39,32 @@
         }
       ]
     },
+    "retrying": {
+      "prompt": "Preview a background subagent retrying an upstream request.",
+      "parts": [
+        {
+          "type": "subagent",
+          "agent": "explore",
+          "description": "Retry provider request while maintaining context",
+          "state": "retrying",
+          "background": true,
+          "message": "Rate limited by provider; retrying after quota window",
+          "attempt": 2
+        }
+      ]
+    },
+    "failed": {
+      "prompt": "Preview a delegated task failure.",
+      "parts": [
+        {
+          "type": "subagent",
+          "agent": "general",
+          "description": "Fail delegated work after checking upstream status",
+          "state": "error",
+          "error": "Provider returned an authentication error"
+        }
+      ]
+    },
     "completed": {
       "prompt": "Preview completed foreground and background subagents.",
       "parts": [
